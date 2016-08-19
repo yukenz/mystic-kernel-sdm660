@@ -32,6 +32,7 @@
 #define ICC_CTLR			__ACCESS_CP15(c12, 0, c12, 4)
 #define ICC_SRE				__ACCESS_CP15(c12, 0, c12, 5)
 #define ICC_IGRPEN1			__ACCESS_CP15(c12, 0, c12, 7)
+#define ICC_BPR1			__ACCESS_CP15(c12, 0, c12, 3)
 
 #define ICC_HSRE			__ACCESS_CP15(c12, 4, c9, 5)
 
@@ -150,6 +151,11 @@ static inline void gic_write_sre(u32 val)
 {
 	write_sysreg(val, ICC_SRE);
 	isb();
+}
+
+static inline void gic_write_bpr1(u32 val)
+{
+	asm volatile("mcr " __stringify(ICC_BPR1) : : "r" (val));
 }
 
 /*
