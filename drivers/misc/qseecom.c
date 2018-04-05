@@ -4840,10 +4840,7 @@ recheck:
 		pr_debug("%s: Loading app for the first time'\n",
 				qseecom.pdev->init_name);
 		ret = __qseecom_load_fw(data, app_name, &app_id);
-		if (ret == -EEXIST) {
-			pr_err("recheck if TA %s is loaded\n", app_name);
-			goto recheck;
-		} else if (ret < 0)
+		if (ret < 0)
 			goto exit_ion_free;
 	}
 	data->client.app_id = app_id;
@@ -4927,7 +4924,6 @@ exit_handle_free:
 		kfree(*handle);
 		*handle = NULL;
 	}
-	__wakeup_unload_app_kthread();
 	return ret;
 }
 EXPORT_SYMBOL(qseecom_start_app);
