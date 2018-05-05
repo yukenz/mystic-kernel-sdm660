@@ -209,15 +209,9 @@ struct qseecom_registered_listener_list {
 	bool                       listener_in_use;
 	/* wq for thread blocked on this listener*/
 	wait_queue_head_t          listener_block_app_wq;
-	struct sglist_info         sglistinfo_ptr[MAX_ION_FD];
-	uint32_t                   sglist_cnt;
-	int                        abort;
-	bool                       unregister_pending;
-};
-
-struct qseecom_unregister_pending_list {
-	struct list_head		list;
-	struct qseecom_dev_handle	*data;
+	struct sglist_info sglistinfo_ptr[MAX_ION_FD];
+	uint32_t sglist_cnt;
+	int abort;
 };
 
 struct qseecom_registered_app_list {
@@ -1290,8 +1284,24 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 	return ret;
 }
 
-static int __qseecom_unregister_listener(struct qseecom_dev_handle *data,
-			struct qseecom_registered_listener_list *ptr_svc)
+static void __qseecom_listener_abort_all(int abort)
+{
+	struct qseecom_registered_listener_list *entry = NULL;
+	unsigned long flags;
+
+	spin_lock_irqsave(&qseecom.registered_listener_list_lock, flags);
+	list_for_each_entry(entry,
+			&qseecom.registered_listener_list_head, list) {
+		pr_debug("set abort %d for listener %d\n",
+				abort, entry->svc.listener_id);
+		entry->abort = abort;
+	}
+	if (abort)
+		wake_up_interruptible_all(&qseecom.send_resp_wq);
+	spin_unlock_irqrestore(&qseecom.registered_listener_list_lock, flags);
+}
+
+static int qseecom_unregister_listener(struct qseecom_dev_handle *data)
 {
 	int ret = 0;
 	struct qseecom_register_listener_ireq req;
@@ -1321,8 +1331,18 @@ static int __qseecom_unregister_listener(struct qseecom_dev_handle *data,
 	if (resp.result != QSEOS_RESULT_SUCCESS) {
 		pr_err("Failed resp.result=%d,(lstnr id=%d)\n",
 				resp.result, data->listener.id);
-		ret = -EPERM;
-		goto exit;
+		return -EPERM;
+	}
+
+	data->abort = 1;
+	spin_lock_irqsave(&qseecom.registered_listener_list_lock, flags);
+	list_for_each_entry(ptr_svc, &qseecom.registered_listener_list_head,
+			list) {
+		if (ptr_svc->svc.listener_id == data->listener.id) {
+			ptr_svc->abort = 1;
+			wake_up_all(&ptr_svc->rcv_req_wq);
+			break;
+		}
 	}
 
 	while (atomic_read(&data->ioctl_count) > 1) {
@@ -1842,7 +1862,7 @@ static int __qseecom_process_incomplete_cmd(struct qseecom_dev_handle *data,
 		}
 
 		if (ptr_svc->abort == 1) {
-			pr_debug("Service %d abort %d\n",
+			pr_err("Service %d abort %d\n",
 						lstnr, ptr_svc->abort);
 			rc = -ENODEV;
 			status = QSEOS_RESULT_FAILURE;
@@ -1864,7 +1884,7 @@ static int __qseecom_process_incomplete_cmd(struct qseecom_dev_handle *data,
 			 * send_resp_flag.
 			 */
 			if (!qseecom.qsee_reentrancy_support &&
-				!wait_event_interruptible(qseecom.send_resp_wq,
+				!wait_event_freezable(qseecom.send_resp_wq,
 				__qseecom_listener_has_sent_rsp(
 						data, ptr_svc))) {
 				break;
@@ -2170,7 +2190,7 @@ static int __qseecom_reentrancy_process_incomplete_cmd(
 		}
 
 		if (ptr_svc->abort == 1) {
-			pr_debug("Service %d abort %d\n",
+			pr_err("Service %d abort %d\n",
 						lstnr, ptr_svc->abort);
 			rc = -ENODEV;
 			status = QSEOS_RESULT_FAILURE;
@@ -2212,8 +2232,7 @@ static int __qseecom_reentrancy_process_incomplete_cmd(
 			status  = QSEOS_RESULT_SUCCESS;
 		}
 err_resp:
-		if (ptr_svc)
-			table = ptr_svc->sglistinfo_ptr;
+		table = ptr_svc->sglistinfo_ptr;
 		if (qseecom.qsee_version < QSEE_VERSION_40) {
 			send_data_rsp.listener_id  = lstnr;
 			send_data_rsp.status = status;
@@ -4136,9 +4155,8 @@ static int __qseecom_listener_has_rcvd_req(struct qseecom_dev_handle *data,
 		struct qseecom_registered_listener_list *svc)
 {
 	int ret;
-
-	ret = (svc->rcv_req_flag == 1);
-	return ret || data->abort;
+	ret = (svc->rcv_req_flag != 0);
+	return ret || data->abort || svc->abort;
 }
 
 static int qseecom_receive_req(struct qseecom_dev_handle *data)
@@ -4165,7 +4183,7 @@ static int qseecom_receive_req(struct qseecom_dev_handle *data)
 			return -ERESTARTSYS;
 		}
 
-		if (data->abort) {
+		if (data->abort || this_lstnr->abort) {
 			pr_err("Aborting Listener Service = %d\n",
 					(uint32_t)data->listener.id);
 			return -ENODEV;
@@ -7355,12 +7373,14 @@ long qseecom_ioctl(struct file *file,
 			break;
 		}
 		pr_debug("ioctl unregister_listener_req()\n");
-		mutex_lock(&listener_access_lock);
+		__qseecom_listener_abort_all(1);
+		mutex_lock(&app_access_lock);
 		atomic_inc(&data->ioctl_count);
 		ret = qseecom_unregister_listener(data);
 		atomic_dec(&data->ioctl_count);
 		wake_up_all(&data->abort_wq);
-		mutex_unlock(&listener_access_lock);
+		mutex_unlock(&app_access_lock);
+		__qseecom_listener_abort_all(0);
 		if (ret)
 			pr_err("failed qseecom_unregister_listener: %d\n", ret);
 		break;
@@ -8062,14 +8082,11 @@ static int qseecom_release(struct inode *inode, struct file *file)
 			data->type, data->mode, data);
 		switch (data->type) {
 		case QSEECOM_LISTENER_SERVICE:
-			pr_debug("release lsnr svc %d\n", data->listener.id);
-			mutex_lock(&listener_access_lock);
+			__qseecom_listener_abort_all(1);
+			mutex_lock(&app_access_lock);
 			ret = qseecom_unregister_listener(data);
-			if (!ret)
-				free_private_data = false;
-			data->listener.release_called = true;
-			mutex_unlock(&listener_access_lock);
-			__wakeup_unregister_listener_kthread();
+			mutex_unlock(&app_access_lock);
+			__qseecom_listener_abort_all(0);
 			break;
 		case QSEECOM_CLIENT_APP:
 			pr_debug("release app %d (%s)\n",
