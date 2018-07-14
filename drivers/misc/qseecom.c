@@ -221,7 +221,7 @@ struct qseecom_registered_app_list {
 	char app_name[MAX_APP_NAME_SIZE];
 	u32  app_arch;
 	bool app_blocked;
-	u32  check_block;
+	bool check_block;
 	u32  blocked_on_listener_id;
 };
 
@@ -2360,7 +2360,7 @@ static void __qseecom_reentrancy_check_if_this_app_blocked(
 			struct qseecom_registered_app_list *ptr_app)
 {
 	if (qseecom.qsee_reentrancy_support) {
-		ptr_app->check_block++;
+		ptr_app->check_block = true;
 		while (ptr_app->app_blocked || qseecom.app_block_ref_cnt > 1) {
 			/* thread sleep until this app unblocked */
 			mutex_unlock(&app_access_lock);
@@ -2369,7 +2369,7 @@ static void __qseecom_reentrancy_check_if_this_app_blocked(
 				qseecom.app_block_ref_cnt <= 1));
 			mutex_lock(&app_access_lock);
 		}
-		ptr_app->check_block--;
+		ptr_app->check_block = false;
 	}
 }
 
