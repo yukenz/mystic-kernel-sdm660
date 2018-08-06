@@ -1810,6 +1810,7 @@ static int __qseecom_process_incomplete_cmd(struct qseecom_dev_handle *data,
 	int ret = 0;
 	int rc = 0;
 	uint32_t lstnr;
+	unsigned long flags;
 	struct qseecom_client_listener_data_irsp send_data_rsp = {0};
 	struct qseecom_client_listener_data_64bit_irsp send_data_rsp_64bit
 									= {0};
@@ -2133,6 +2134,7 @@ static int __qseecom_reentrancy_process_incomplete_cmd(
 	int ret = 0;
 	int rc = 0;
 	uint32_t lstnr;
+	unsigned long flags;
 	struct qseecom_client_listener_data_irsp send_data_rsp = {0};
 	struct qseecom_client_listener_data_64bit_irsp send_data_rsp_64bit
 									= {0};
@@ -2226,7 +2228,8 @@ static int __qseecom_reentrancy_process_incomplete_cmd(
 			status  = QSEOS_RESULT_SUCCESS;
 		}
 err_resp:
-		table = ptr_svc->sglistinfo_ptr;
+		if (ptr_svc)
+			table = ptr_svc->sglistinfo_ptr;
 		if (qseecom.qsee_version < QSEE_VERSION_40) {
 			send_data_rsp.listener_id  = lstnr;
 			send_data_rsp.status = status;
@@ -2949,24 +2952,9 @@ static void __qseecom_processing_pending_unload_app(void)
 		list_del(pos);
 		kzfree(entry);
 	}
-	mutex_unlock(&unload_app_pending_list_lock);
-}
-
-static int __qseecom_unload_app_kthread_func(void *data)
-{
-	while (!kthread_should_stop()) {
-		wait_event_interruptible(
-			qseecom.unload_app_kthread_wq,
-			atomic_read(&qseecom.unload_app_kthread_state)
-				== UNLOAD_APP_KT_WAKEUP);
-		pr_debug("kthread to unload app is called, state %d\n",
-			atomic_read(&qseecom.unload_app_kthread_state));
-		__qseecom_processing_pending_unload_app();
-		atomic_set(&qseecom.unload_app_kthread_state,
-				UNLOAD_APP_KT_SLEEP);
-	}
-	pr_warn("kthread to unload app stopped\n");
-	return 0;
+	qseecom_unmap_ion_allocated_memory(data);
+	data->released = true;
+	return ret;
 }
 
 static phys_addr_t __qseecom_uvirt_to_kphys(struct qseecom_dev_handle *data,
