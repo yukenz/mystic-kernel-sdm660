@@ -1233,29 +1233,12 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 			rcvd_lstnr.sb_size))
 		return -EFAULT;
 
-	ptr_svc = __qseecom_find_svc(rcvd_lstnr.listener_id);
-	if (ptr_svc) {
-		if (ptr_svc->unregister_pending == false) {
-			pr_err("Service %d is not unique\n",
+	data->listener.id = rcvd_lstnr.listener_id;
+	if (!__qseecom_is_svc_unique(data, &rcvd_lstnr)) {
+		pr_err("Service %d is not unique and failed to register\n",
 				rcvd_lstnr.listener_id);
-			data->released = true;
-			return -EBUSY;
-		}
-		/*wait until listener is unregistered*/
-		pr_debug("register %d has to wait\n",
-			rcvd_lstnr.listener_id);
-		mutex_unlock(&listener_access_lock);
-		ret = wait_event_interruptible(
-			qseecom.register_lsnr_pending_wq,
-			list_empty(
-			&qseecom.unregister_lsnr_pending_list_head));
-		if (ret) {
-			pr_err("interrupted register_pending_wq %d\n",
-					rcvd_lstnr.listener_id);
-			mutex_lock(&listener_access_lock);
-			return -ERESTARTSYS;
-		}
-		mutex_lock(&listener_access_lock);
+		data->released = true;
+		return -EBUSY;
 	}
 	new_entry = kzalloc(sizeof(*new_entry), GFP_KERNEL);
 	if (!new_entry)
@@ -1279,8 +1262,7 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 	new_entry->listener_in_use = false;
 	list_add_tail(&new_entry->list, &qseecom.registered_listener_list_head);
 
-	data->listener.id = rcvd_lstnr.listener_id;
-	pr_debug("Service %d is registered\n", rcvd_lstnr.listener_id);
+	pr_warn("Service %d is registered\n", rcvd_lstnr.listener_id);
 	return ret;
 }
 
@@ -1308,6 +1290,12 @@ static int qseecom_unregister_listener(struct qseecom_dev_handle *data)
 	struct qseecom_command_scm_resp resp;
 	struct ion_handle *ihandle = NULL;		/* Retrieve phy addr */
 
+	ptr_svc = __qseecom_find_svc(data->listener.id);
+	if (!ptr_svc) {
+		pr_err("Unregiser invalid listener ID %d\n", data->listener.id);
+		return -ENODATA;
+	}
+
 	req.qsee_cmd_id = QSEOS_DEREGISTER_LISTENER;
 	req.listener_id = data->listener.id;
 	resp.result = QSEOS_RESULT_INCOMPLETE;
@@ -1323,27 +1311,19 @@ static int qseecom_unregister_listener(struct qseecom_dev_handle *data)
 	if (ret) {
 		pr_err("scm_call() failed with err: %d (lstnr id=%d)\n",
 				ret, data->listener.id);
-		if (ret == -EBUSY)
-			return ret;
 		goto exit;
 	}
 
 	if (resp.result != QSEOS_RESULT_SUCCESS) {
 		pr_err("Failed resp.result=%d,(lstnr id=%d)\n",
 				resp.result, data->listener.id);
-		return -EPERM;
+		ret = -EPERM;
+		goto exit;
 	}
 
 	data->abort = 1;
-	spin_lock_irqsave(&qseecom.registered_listener_list_lock, flags);
-	list_for_each_entry(ptr_svc, &qseecom.registered_listener_list_head,
-			list) {
-		if (ptr_svc->svc.listener_id == data->listener.id) {
-			ptr_svc->abort = 1;
-			wake_up_all(&ptr_svc->rcv_req_wq);
-			break;
-		}
-	}
+	ptr_svc->abort = 1;
+	wake_up_all(&ptr_svc->rcv_req_wq);
 
 	while (atomic_read(&data->ioctl_count) > 1) {
 		if (wait_event_interruptible(data->abort_wq,
@@ -1365,7 +1345,7 @@ exit:
 	kzfree(ptr_svc);
 
 	data->released = true;
-	pr_debug("Service %d is unregistered\n", data->listener.id);
+	pr_warn("Service %d is unregistered\n", data->listener.id);
 	return ret;
 }
 
