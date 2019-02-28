@@ -2022,18 +2022,12 @@ static int __qseecom_process_reentrancy_blocked_on_listener(
 	}
 
 	/* find app_id & img_name from list */
-	if (!ptr_app) {
-		if (data->client.from_smcinvoke) {
-			pr_debug("This request is from smcinvoke\n");
-			ptr_app = &dummy_app_entry;
-			ptr_app->app_id = data->client.app_id;
-		} else {
-			spin_lock_irqsave(&qseecom.registered_app_list_lock,
-						flags);
-			list_for_each_entry(ptr_app,
-				&qseecom.registered_app_list_head, list) {
-				if ((ptr_app->app_id == data->client.app_id) &&
-					(!strcmp(ptr_app->app_name,
+	if (!ptr_app && data->client.app_arch != ELFCLASSNONE) {
+		spin_lock_irqsave(&qseecom.registered_app_list_lock, flags);
+		list_for_each_entry(ptr_app, &qseecom.registered_app_list_head,
+							list) {
+			if ((ptr_app->app_id == data->client.app_id) &&
+				(!strcmp(ptr_app->app_name,
 						data->client.app_name))) {
 					found_app = true;
 					break;
