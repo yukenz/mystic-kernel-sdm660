@@ -3882,7 +3882,7 @@ static int qseecom_receive_req(struct qseecom_dev_handle *data)
 			return -ERESTARTSYS;
 		}
 
-		if (data->abort || this_lstnr->abort) {
+		if (data->abort) {
 			pr_err("Aborting Listener Service = %d\n",
 						(uint32_t)data->listener.id);
 			return -ENODEV;
